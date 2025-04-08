@@ -35,13 +35,13 @@
 ### **Dependencies**  
 ```bash
 # Debian/Ubuntu
-sudo apt install sshpass sshfs python3
+sudo apt install sshpass sshfs python3 python3-paramiko openssh-server
 
 # Arch Linux
-sudo pacman -S sshpass sshfs python
+sudo pacman -S sshpass sshfs python python3-paramiko openssh-server
 
 # Fedora
-sudo dnf install sshpass fuse-sshfs python3
+sudo dnf install sshpass fuse-sshfs python3 python3-paramiko openssh-server
 ```
 
 🚀 Installation
