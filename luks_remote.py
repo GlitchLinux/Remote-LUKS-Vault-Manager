@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import shutil
 import getpass
+import socket
 from typing import Optional, Dict, List
 
 # Configuration handling - updated paths
@@ -67,7 +68,7 @@ class RemoteLUKSVault:
             return None
         print("\nSaved configurations:")
         for i, cfg in enumerate(configs, 1):
-            print(f"{i}. {cfg['name']} ({cfg.get('hostname', '')})")
+            print(f"{i}. {cfg['name']} ({cfg.get('hostname', '')}:{cfg.get('port', '22')}")
         print("\n0. Create new configuration")
         try:
             choice = int(input("\nSelect configuration (number): "))
@@ -80,10 +81,21 @@ class RemoteLUKSVault:
     def get_ssh_credentials(self) -> Dict:
         """Prompt for SSH credentials"""
         print("\nEnter SSH connection details:")
-        hostname = input("Hostname: ").strip()
+        while True:
+            hostname = input("Hostname/IP: ").strip()
+            if hostname:
+                break
+            print("Hostname cannot be empty")
+                
         port = input("Port [22]: ").strip() or "22"
         username = input("Username: ").strip()
-        password = getpass.getpass("Password: ")
+        
+        while True:
+            password = getpass.getpass("Password: ")
+            if password:
+                break
+            print("Password cannot be empty")
+                
         return {
             'hostname': hostname,
             'port': port,
@@ -94,29 +106,75 @@ class RemoteLUKSVault:
     def get_luks_details(self) -> Dict:
         """Prompt for LUKS details"""
         print("\nEnter LUKS volume details:")
-        device = input("Device (e.g. /dev/sdb1): ").strip()
+        while True:
+            device = input("Device (e.g. /dev/sdb1): ").strip()
+            if device:
+                break
+            print("Device cannot be empty")
+                
         mapper = input("Mapper name [encrypted_vault]: ").strip() or "encrypted_vault"
         mount_point = input("Mount point [/mnt/encrypted]: ").strip() or "/mnt/encrypted"
+        
         return {
             'device': device,
             'mapper': mapper,
             'mount_point': mount_point
         }
 
-    def connect_ssh(self, config: Dict) -> bool:
-        """Establish SSH connection"""
+    def check_port_open(self, host: str, port: int) -> bool:
+        """Check if remote port is reachable"""
         try:
-            # Test SSH connection
-            cmd = [
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                result = s.connect_ex((host, port))
+                return result == 0
+        except Exception as e:
+            print(f"Network error: {str(e)}")
+            return False
+
+    def connect_ssh(self, config: Dict) -> bool:
+        """Establish SSH connection with public IP support"""
+        try:
+            # Check port availability first
+            if not self.check_port_open(config['hostname'], int(config['port'])):
+                print(f"Error: Port {config['port']} not reachable on {config['hostname']}")
+                print("Check firewall/port forwarding settings")
+                return False
+
+            # Test SSH connection with verbose output
+            test_cmd = [
+                'sshpass', '-p', config['password'],
+                'ssh', '-p', config['port'],
+                '-v',  # Verbose mode for debugging
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'ConnectTimeout=15',
+                f"{config['username']}@{config['hostname']}",
+                'echo "CONNECTION_TEST_SUCCESS"'
+            ]
+            result = subprocess.run(test_cmd, capture_output=True, text=True)
+            
+            if "CONNECTION_TEST_SUCCESS" not in result.stdout:
+                print(f"SSH connection failed: {result.stderr}")
+                print("Potential issues:")
+                print("- Incorrect credentials")
+                print("- SSH server configuration")
+                print("- Network restrictions")
+                return False
+
+            # Verify cryptsetup availability
+            cryptsetup_cmd = [
                 'sshpass', '-p', config['password'],
                 'ssh', '-p', config['port'],
                 f"{config['username']}@{config['hostname']}",
-                'echo "Connection successful"'
+                'command -v cryptsetup || which cryptsetup || sudo which cryptsetup'
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if "Connection successful" not in result.stdout:
-                print(f"SSH connection failed: {result.stderr}")
+            result = subprocess.run(cryptsetup_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print("Error: cryptsetup not found on remote server")
+                print("Install with: sudo apt install cryptsetup")
                 return False
+
             self.ssh_config = config
             self.connected = True
             return True
@@ -125,10 +183,11 @@ class RemoteLUKSVault:
             return False
 
     def mount_luks(self, config: Dict) -> bool:
-        """Mount the LUKS volume"""
+        """Mount the LUKS volume with public IP support"""
         if not self.connected:
             print("Not connected to SSH server")
             return False
+            
         passphrase = getpass.getpass("Enter LUKS passphrase: ")
         try:
             print("\n[1/3] Unlocking LUKS container...")
@@ -136,37 +195,38 @@ class RemoteLUKSVault:
             cmd = [
                 'sshpass', '-p', self.ssh_config['password'],
                 'ssh', '-p', self.ssh_config['port'],
+                '-t',  # Force pseudo-terminal allocation
+                '-o', 'ConnectTimeout=20',
                 f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
                 ssh_cmd
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
+            
             if result.returncode != 0:
                 print(f"Failed to unlock LUKS: {result.stderr}")
+                if "No key available" in result.stderr:
+                    print("Error: Wrong passphrase or not a LUKS device")
                 return False
 
             print("[2/3] Mounting LUKS volume on remote...")
-            # Added chmod to ensure permissions are correct
             ssh_cmd = (
-                f"echo {passphrase} | sudo -S mount /dev/mapper/{config['mapper']} {config['mount_point']} && "
+                f"echo {passphrase} | sudo -S mkdir -p {config['mount_point']} && "
+                f"sudo mount /dev/mapper/{config['mapper']} {config['mount_point']} && "
                 f"sudo chmod -R 777 {config['mount_point']}"
             )
             cmd = [
                 'sshpass', '-p', self.ssh_config['password'],
                 'ssh', '-p', self.ssh_config['port'],
+                '-t',
+                '-o', 'ConnectTimeout=20',
                 f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
                 ssh_cmd
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
+            
             if result.returncode != 0:
                 print(f"Failed to mount: {result.stderr}")
-                # Clean up if mount failed
-                ssh_cmd = f"echo {passphrase} | sudo -S cryptsetup luksClose {config['mapper']}"
-                subprocess.run([
-                    'sshpass', '-p', self.ssh_config['password'],
-                    'ssh', '-p', self.ssh_config['port'],
-                    f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
-                    ssh_cmd
-                ], capture_output=True)
+                self.remote_luks_close(config['mapper'])
                 return False
 
             print("[3/3] Mounting via SSHFS locally...")
@@ -174,83 +234,144 @@ class RemoteLUKSVault:
             cmd = [
                 'sshfs',
                 '-p', self.ssh_config['port'],
-                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}:{config['mount_point']}",
-                str(MOUNT_DIR),
-                '-o', 'password_stdin',
-                '-o', 'uid=' + str(os.getuid()),
-                '-o', 'gid=' + str(os.getgid()),
-                '-o', 'allow_other',  # Added to allow access to all users
-                '-o', 'default_permissions',
                 '-o', 'reconnect',
-                '-o', 'ServerAliveInterval=15',
-                '-o', 'ServerAliveCountMax=3'
+                '-o', 'ServerAliveInterval=20',
+                '-o', 'ServerAliveCountMax=5',
+                '-o', 'ConnectTimeout=20',
+                '-o', 'password_stdin',
+                '-o', f"uid={os.getuid()}",
+                '-o', f"gid={os.getgid()}",
+                '-o', 'allow_other',
+                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}:{config['mount_point']}",
+                str(MOUNT_DIR)
             ]
+            
             result = subprocess.run(
                 cmd, 
                 input=self.ssh_config['password'],
                 text=True,
-                capture_output=True
+                capture_output=True,
+                timeout=30
             )
+            
             if result.returncode != 0:
-                print(f"Failed to mount via SSHFS: {result.stderr}")
+                print(f"SSHFS mount failed: {result.stderr}")
+                self.remote_unmount(config['mount_point'])
+                self.remote_luks_close(config['mapper'])
                 return False
+                
             self.luks_config = config
             self.mounted = True
-            print("Successfully mounted!")
-            print(f"Files should be accessible at: {MOUNT_DIR}")
+            print("\nSuccessfully mounted!")
+            print(f"Access files at: {MOUNT_DIR}")
+            
+            # Automatically open file manager upon successful mount
+            self.open_file_manager()
             return True
+            
+        except subprocess.TimeoutExpired:
+            print("Operation timed out - check network connection")
+            return False
         except Exception as e:
             print(f"Mount error: {str(e)}")
+            return False
+
+    def open_file_manager(self):
+        """Automatically open preferred file manager after successful mount"""
+        if not os.environ.get('DISPLAY'):
+            print("No GUI environment detected - skipping file manager launch")
+            return
+
+        # Preferred file managers in order of preference
+        file_managers = [
+	    ('thunar', 'Thunar (XFCE)'),	
+            ('dolphin', 'Dolphin (KDE)'),
+            ('nautilus', 'Nautilus (GNOME)'),
+            ('pcmanfm', 'PCManFM (LXDE)'),
+            ('nemo', 'Nemo (Cinnamon)')
+        ]
+
+        for cmd, name in file_managers:
+            if shutil.which(cmd):
+                try:
+                    subprocess.Popen(
+                        [cmd, str(MOUNT_DIR)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    print(f"Automatically opened {name} file manager")
+                    return
+                except Exception as e:
+                    print(f"Failed to open {name}: {str(e)}")
+                    continue
+
+        print("No supported file manager found - mounted at:", MOUNT_DIR)
+
+    def remote_unmount(self, mount_point: str) -> bool:
+        """Unmount remote filesystem"""
+        try:
+            cmd = [
+                'sshpass', '-p', self.ssh_config['password'],
+                'ssh', '-p', self.ssh_config['port'],
+                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
+                f"sudo umount {mount_point}"
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def remote_luks_close(self, mapper: str) -> bool:
+        """Close LUKS container remotely"""
+        try:
+            cmd = [
+                'sshpass', '-p', self.ssh_config['password'],
+                'ssh', '-p', self.ssh_config['port'],
+                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
+                f"sudo cryptsetup luksClose {mapper}"
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            return result.returncode == 0
+        except Exception:
             return False
 
     def unmount(self):
         """Unmount and lock the LUKS volume"""
         if not self.mounted:
             return
-        try:
-            print("\nUnmounting SSHFS...")
-            # Try multiple unmount methods
-            unmounted = False
-            for cmd in [['fusermount', '-u', str(MOUNT_DIR)], 
-                       ['umount', '-l', str(MOUNT_DIR)],  # Lazy unmount
-                       ['umount', str(MOUNT_DIR)]]:
-                try:
-                    subprocess.run(cmd, check=True)
-                    unmounted = True
-                    break
-                except subprocess.CalledProcessError:
-                    continue
-            if not unmounted:
-                print(f"Warning: Could not unmount {MOUNT_DIR}. You may need to unmount manually.")
-                print("Try: sudo umount -f " + str(MOUNT_DIR))
-                return False
+            
+        success = True
+        print("\n[1/3] Unmounting SSHFS...")
+        unmounted = False
+        
+        # Try multiple unmount methods
+        for umount_cmd in [['fusermount', '-u', str(MOUNT_DIR)],
+                          ['umount', '-l', str(MOUNT_DIR)],
+                          ['umount', str(MOUNT_DIR)],
+                          ['sudo', 'umount', str(MOUNT_DIR)]]:
+            result = subprocess.run(umount_cmd, capture_output=True)
+            if result.returncode == 0:
+                unmounted = True
+                break
+                
+        if not unmounted:
+            print(f"Warning: Could not unmount {MOUNT_DIR}")
+            print("Try manually: sudo umount -f " + str(MOUNT_DIR))
+            success = False
 
-            # Remote unmount and lock
-            passphrase = getpass.getpass("Enter LUKS passphrase to unlock: ")
-            print("Unmounting remote volume...")
-            ssh_cmd = f"echo {passphrase} | sudo -S umount {self.luks_config['mount_point']}"
-            cmd = [
-                'sshpass', '-p', self.ssh_config['password'],
-                'ssh', '-p', self.ssh_config['port'],
-                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
-                ssh_cmd
-            ]
-            subprocess.run(cmd, check=True)
-            print("Locking LUKS container...")
-            ssh_cmd = f"echo {passphrase} | sudo -S cryptsetup luksClose {self.luks_config['mapper']}"
-            cmd = [
-                'sshpass', '-p', self.ssh_config['password'],
-                'ssh', '-p', self.ssh_config['port'],
-                f"{self.ssh_config['username']}@{self.ssh_config['hostname']}",
-                ssh_cmd
-            ]
-            subprocess.run(cmd, check=True)
-            self.mounted = False
-            print("Volume unmounted and locked")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Unmount failed: {str(e)}")
-            return False
+        print("[2/3] Unmounting remote volume...")
+        if not self.remote_unmount(self.luks_config['mount_point']):
+            success = False
+            
+        print("[3/3] Locking LUKS container...")
+        if not self.remote_luks_close(self.luks_config['mapper']):
+            success = False
+            
+        self.mounted = False
+        if success:
+            print("Volume successfully unmounted and locked")
+        return success
 
     def disconnect(self):
         """Disconnect from SSH"""
@@ -259,33 +380,20 @@ class RemoteLUKSVault:
         self.connected = False
         print("Disconnected")
 
-    def open_gui_file_manager(self):
-        """Open the mounted directory in a GUI file manager"""
-        try:
-            gui_managers = ['thunar', 'nautilus', 'pcmanfm', 'dolphin']
-            for manager in gui_managers:
-                if shutil.which(manager):
-                    subprocess.Popen([manager, str(MOUNT_DIR)])
-                    print(f"Opened {MOUNT_DIR} in {manager}")
-                    return
-            print("No supported GUI file manager found. Please install Thunar, Nautilus, PCManFM, or Dolphin.")
-        except Exception as e:
-            print(f"Failed to open GUI file manager: {str(e)}")
-
     def run(self):
         """Main application loop"""
-        print("=== Remote LUKS Vault Manager ===")
-        # Check dependencies first
+        print("\n=== Remote LUKS Vault Manager ===")
         self.check_dependencies()
-        # Load or create configuration
+        
         config = self.select_config()
         if config:
             print(f"\nUsing configuration: {config['name']}")
-            use_this = input("Use this configuration? [Y/n]: ").lower() != 'n'
-            if not use_this:
+            if input("Use this configuration? [Y/n]: ").lower() == 'n':
                 config = None
+                
         if not config:
-            name = input("\nEnter a name for this configuration: ").strip()
+            print("\nCreate new configuration:")
+            name = input("Configuration name: ").strip()
             ssh_config = self.get_ssh_credentials()
             luks_config = self.get_luks_details()
             config = {
@@ -294,17 +402,24 @@ class RemoteLUKSVault:
                 **luks_config
             }
             self.save_config(name, config)
-        # Connect and mount
+
+        print("\nConnecting to remote server...")
         if not self.connect_ssh(config):
-            return
+            print("Connection failed")
+            sys.exit(1)
+            
+        print("Mounting LUKS volume...")
         if not self.mount_luks(config):
             self.disconnect()
-            return
-        # Open GUI file manager
-        self.open_gui_file_manager()
-        # Disconnect when done
-        input("\nPress Enter to unmount and disconnect...")
+            sys.exit(1)
+        
+        try:
+            input("\nPress Enter to unmount and disconnect...")
+        except KeyboardInterrupt:
+            print("\nInterrupt received, unmounting...")
+            
         self.disconnect()
+        print("\nOperation completed")
 
 if __name__ == "__main__":
     vault = RemoteLUKSVault()
