@@ -1,102 +1,99 @@
-Here’s a polished **GitHub README.md** for your **gLiTcH Linux Remote LUKS Vault Manager**, with clear setup instructions, dependencies, and emphasis on manual LUKS setup:
+# **Remote LUKS Vault Manager** 🔒  
+
+*A Python script to securely mount and manage LUKS-encrypted remote drives over SSHFS.*  
+
+![Demo](https://img.shields.io/badge/status-working-brightgreen) ![Python](https://img.shields.io/badge/python-3.6+-blue) ![License](https://img.shields.io/badge/license-MIT-green)  
 
 ---
 
-```markdown
-# 🔒 gLiTcH Linux Remote LUKS Vault Manager
-
-**Mount LUKS-encrypted remote drives over SSHFS with ease.**  
-*A secure solution for accessing encrypted storage on remote servers from your gLiTcH Linux machine.*
-
-![gLiTcH Linux](https://img.shields.io/badge/gLiTcH_Linux-✓-success) ![Python](https://img.shields.io/badge/python-3.6+-blue) ![SSHFS](https://img.shields.io/badge/SSHFS-✓-orange)
+## **📌 Features**  
+✅ **Secure Remote Access** – Mount LUKS-encrypted drives over SSH.  
+✅ **Automated Mounting** – Unlock, mount, and access files with one command.  
+✅ **GUI Integration** – Open mounted files in your preferred file manager (Thunar, Nautilus, etc.).  
+✅ **Config Management** – Save multiple remote LUKS configurations.  
 
 ---
 
-## 🌟 Features
-- **One-Click Mounting** – Unlock and mount remote LUKS volumes via SSH.
-- **GUI Integration** – Auto-opens in Thunar/Nautilus/Dolphin.
-- **Multi-Config Support** – Save multiple server profiles.
-- **Secure Cleanup** – Automatically unmounts and locks volumes.
+## **⚠️ Important Note: LUKS Volume Setup**  
+**This script does not create the LUKS volume for you.** You must **manually** set it up on the remote server first.  
+
+### **🔧 Prerequisites on Remote Server**  
+1. **A pre-existing LUKS-encrypted partition** (e.g., `/dev/sda2`).  
+   - If not set up, use:  
+     ```bash
+     sudo cryptsetup luksFormat /dev/sdX  # Replace sdX with your device
+     sudo cryptsetup luksOpen /dev/sdX remote_vault
+     sudo mkfs.ext4 /dev/mapper/remote_vault
+     sudo mount /dev/mapper/remote_vault /mnt/encrypted
+     ```
+2. **SSH access** with `sudo` privileges for mounting/unmounting.  
 
 ---
 
-## ⚠️ Prerequisites
-### 🔧 **Remote Server Setup (Manual)**
-1. **Pre-existing LUKS Volume** (must be set up beforehand):
-   ```bash
-   sudo cryptsetup luksFormat /dev/sdX        # Replace sdX with your device (e.g., sda2)
-   sudo cryptsetup luksOpen /dev/sdX vault    # Unlock
-   sudo mkfs.ext4 /dev/mapper/vault           # Format
-   sudo mount /dev/mapper/vault /mnt/encrypted  # Mount
-   ```
-2. **SSH Access**:
-   - Ensure `openssh-server` is installed and running.
-   - User must have `sudo` privileges for `cryptsetup`/`mount`.
+## **🛠 Installation (Local Machine)**  
 
-### 💻 **Local Machine (gLiTcH Linux)**
+### **Dependencies**  
 ```bash
-# Install dependencies
+# Debian/Ubuntu
 sudo apt install sshpass sshfs python3
 
-# Optional: GUI file manager
-sudo apt install thunar  # or nautilus/dolphin
+# Arch Linux
+sudo pacman -S sshpass sshfs python
+
+# Fedora
+sudo dnf install sshpass fuse-sshfs python3
 ```
 
----
-
-## 🚀 Installation
-```bash
+🚀 Installation
+bash
+Copy
 git clone https://github.com/GlitchLinux/Remote-LUKS-Vault-Manager.git
 cd Remote-LUKS-Vault-Manager
 chmod +x luks_remote.py
 ./luks_remote.py
-```
-*First run creates `~/.LUKS-VAULT/` for configs.*
+First run creates ~/.LUKS-VAULT/ for configs.
+
+## **🚀 Usage**  
+1. **First run:**  
+   - The script creates `~/.LUKS-VAULT/` for configs.  
+   - Follow prompts to add a new remote LUKS volume.  
+
+2. **Mounting:**  
+   - Select a saved config → Enter LUKS passphrase.  
+   - Files appear in `~/.LUKS-VAULT/mnt/`.  
+
+3. **Unmounting:**  
+   - Press `Enter` in the script → Cleanly unmounts everything.  
 
 ---
 
-## 🖥 Usage
-1. **Add a New Config**:
-   - Enter SSH details (`hostname`, `username`, `password`).
-   - Specify LUKS volume (`/dev/sdX`, mapper name, mount point).
-
-2. **Mount**:
-   - Select config → Enter LUKS passphrase.
-   - Access files at `~/.LUKS-VAULT/mnt/`.
-
-3. **Unmount**:
-   - Press `Enter` in the script → Safely locks the volume.
+## **🔄 Manual Commands (For Debugging)**  
+| **Action**               | **Command**                                                                 |
+|--------------------------|----------------------------------------------------------------------------|
+| **Force Unmount**         | `sudo umount -f ~/.LUKS-VAULT/mnt/`                                        |
+| **Check Mount Status**    | `mount | grep LUKS-VAULT` or `ls ~/.LUKS-VAULT/mnt/`                     |
+| **Kill Stuck Processes** | `sudo lsof +D ~/.LUKS-VAULT/mnt/` → `sudo kill -9 <PID>`                  |
 
 ---
 
-## 🛠 Troubleshooting
-| **Issue**                  | **Fix**                                                                 |
-|----------------------------|-------------------------------------------------------------------------|
-| **Empty mount directory**  | Run `sudo chmod -R 777 /mnt/encrypted` on the **remote server**.       |
-| **SSHFS errors**           | Debug with: `sshfs -o debug user@host:/remote/path /local/mount`       |
-| **Stuck unmount**          | `sudo umount -f ~/.LUKS-VAULT/mnt/`                                    |
+## **❓ FAQ**  
+
+### **Q: Why can’t I see files after mounting?**  
+- **Cause:** Permissions or unmount issues.  
+- **Fix:** Run `sudo chmod -R 777 /mnt/encrypted` on the **remote server**.  
+
+### **Q: Can I use SSH keys instead of passwords?**  
+- **Yes!** Set up SSH keys first (`ssh-copy-id`), then modify the script to remove `sshpass`.  
+
+### **Q: How do I add multiple LUKS volumes?**  
+- Just run the script again and create a new config.  
 
 ---
 
-## 📜 License
-**MIT** © [gLiTcH Linux](https://github.com/GlitchLinux)  
-
-**Contribute?** Open a PR! 🛠️  
-**Questions?** Open an Issue! ❓  
+## **📜 License**  
+MIT © [Your Name]  
 
 ---
 
-## 🎉 Screenshot (Example)
-![Terminal Demo](demo.png)  
-*Script in action on gLiTcH Linux.*
-```
-
----
-
-### Key Notes:
-1. **Emphasized Manual LUKS Setup** – Clear steps for pre-configuring the remote volume.
-2. **gLiTcH Branding** – Custom badges and repo links.
-3. **Troubleshooting Table** – Quick fixes for common issues.
-4. **Local/Remote Split** – Separate dependency lists for clarity.
-
-Would you like me to add a **systemd service** example for auto-mounting at boot? Or a **FAQ** section for common gLiTcH-specific issues? 😊
+**🌟 Enjoy secure remote storage!**  
+*Contributions welcome!* 🛠️
