@@ -45,8 +45,7 @@ sudo dnf install sshpass fuse-sshfs python3
 ```
 
 🚀 Installation
-bash
-Copy
+ ```bash
 git clone https://github.com/GlitchLinux/Remote-LUKS-Vault-Manager.git
 cd Remote-LUKS-Vault-Manager
 chmod +x luks_remote.py
@@ -64,6 +63,7 @@ First run creates ~/.LUKS-VAULT/ for configs.
 
 3. **Unmounting:**  
    - Press `Enter` in the script → Cleanly unmounts everything.  
+   ```
 
 ---
 
